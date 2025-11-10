@@ -7,7 +7,10 @@ import torch
 import torch.nn as nn
 import math
 from functools import partial
-
+from torch.utils.data import DataLoader, Dataset
+import os
+from torchvision import transforms
+import torchvision
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     if drop_prob == 0. or not training:
         return x
@@ -205,11 +208,24 @@ def vit_base(patch_size=16, **kwargs):
 
 if __name__ == "__main__":
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    x = torch.randn(16,3,224,224).to(device)
+    # x = torch.randn(16,3,224,224).to(device)
     vb = vit_base().to(device)
-    vb(x)
-    vt = vit_tiny().to(device)
-    vt(x)
-    vs = vit_small().to(device)
-    vs(x)
+    # vb(x)
+    # vt = vit_tiny().to(device)
+    # vt(x)
+    # vs = vit_small().to(device)
+    # vs(x)
+    train_transform = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor()])
+    train_dataset = torchvision.datasets.ImageFolder(root = "/mnt/hdd_6tb/ImageNet/ILSVRC2012_img_val/", transform = train_transform)
+    data_loader = DataLoader(train_dataset, batch_size = 16, shuffle = True)
+
+    for data in data_loader : 
+        image, label = data
+        image = image.to(device)
+        label = label.to(device)
+        vb(image)
+
+
+
+
 
