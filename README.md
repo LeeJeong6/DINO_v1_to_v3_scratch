@@ -20,3 +20,5 @@
 - Dataaug관련 함수 및 클래스 모두 생성
 - multi gpu 관련 함수 및 로직 필터링 중
 - 데이터로더로 aug된 이미지 시각화
+- vision_transformer.py의 head추가, apply,init_weight 등 가중치 초기화 방법들 공부
+- 다음 계획 : head에 존재하는 다른 초기화 방법들 실험 및 공부, main_dino에 존재하는 utils코드 공부하기 
