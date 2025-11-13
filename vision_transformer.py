@@ -98,7 +98,7 @@ class Block(nn.Module):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim = dim, num_heads = num_heads, qkv_bias = qkv_bias, qk_scale = qk_scale, attn_drop = attn_drop, proj_drop = drop)
-        self.drop_path = nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = MLP(in_features = dim, hidden_featrues = mlp_hidden_dim, act_layers = nn.GELU)
@@ -113,13 +113,15 @@ class Block(nn.Module):
 
 class VisionTransformer(nn.Module):
     def  __init__(self, img_size = 224, patch_size = 16, in_chans = 3, embed_dim = 768, drop_rate = 0., num_heads = 12, depth = 12, mlp_ratio = 4., qkv_bias = False, qk_scale = None,
-                attn_drop_rate = 0.,drop_path_rate = 0., norm_layer = nn.LayerNorm, num_classes = 0):
+                attn_drop_rate = 0. , drop_path_rate = 0., norm_layer = nn.LayerNorm, num_classes = 0):
         super().__init__()
+
+        self.num_features = self.embed_dim = embed_dim
         self.patch_embed = PatchEmbed(img_size = img_size, patch_size = patch_size, in_chans = in_chans, embed_dim = embed_dim)
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1,num_patches+1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches+1, embed_dim))
         self.pos_drop = nn.Dropout(p = drop_rate)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
@@ -132,22 +134,25 @@ class VisionTransformer(nn.Module):
         self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0  else nn.Identity()
 
     def prepare_tokens(self,x):
-        B,C,w,h = x.shape
-        x = self.patch_embed(x)
+        B, C, w, h = x.shape
+        x = self.patch_embed(x) # B, num_patches, embed_dim
 
-        cls_token = self.cls_token.expand(B,-1,-1) # B,1,E 
-        x = torch.cat([cls_token, x], dim = 1) # B,n+1,E
+        cls_token = self.cls_token.expand(B,-1,-1) # B,1,embed_dim 
+        x = torch.cat([cls_token, x], dim = 1) # B, 1 + num_patches, embed_dim
 
-        x = x + self.interpolate_pos_encoding(x,w,h)
+        x = x + self.interpolate_pos_encoding(x = x, w = w, h = h)
+        # torch.Size([B, 197, 384])
+        
         return self.pos_drop(x)
 
     def interpolate_pos_encoding(self,x,w,h):
         """
-        만약 w!=h면 보간법을 사용한다
+        만약 w!=h 또는 student라서 96 사이즈가 들어오면 global과 기준이 안맞으므로 보간을 적용한다 
 
         """
+        npatch = x.shape[1] - 1
         N = self.pos_embed.shape[1] - 1 # N
-        if w == h:
+        if npatch == N and w == h:
             return self.pos_embed
         class_pos_embed = self.pos_embed[:,0] # 1,E
    
@@ -217,16 +222,16 @@ class DINOHead(nn.Module):
             if use_bn : 
                 layers.append(nn.BatchNorm1d(hidden_dim))
             layers.append(nn.GELU())
-            for _ in range(n_layers-2):
+            for _ in range(nlayers-2):
                 layers.append(nn.Linear(hidden_dim,hidden_dim))
                 if use_bn:
                     layers.append(nn.BatchNorm1d(hidden_dim))
-                layers.append(nn.GELU)
+                layers.append(nn.GELU())
             layers.append(nn.Linear(hidden_dim, bottleneck_dim))
             self.mlp = nn.Sequential(*layers)
         # self.mlp는 이제 위 layer들을 쌓은 탑이 됨
         # 처음 가중치는 랜덤일텐데 apply함수로 _init_weights에서 정의한 변수들로 초기화가 됨    
-        self.apply(self.__init__weights)
+        # self.apply(self.__init__weights)
         self.last_layer = nn.utils.weight_norm(nn.Linear(bottleneck_dim, out_dim, bias = False))            
         self.last_layer.weight_g.data.fill_(1)
         if norm_last_layer :
@@ -234,11 +239,12 @@ class DINOHead(nn.Module):
 
     def __init__weights(self,m):
         if isinstance(m,nn.Linear):
+            return None
             # 이 실험은 prac에 있음
             # nn.Linear에 존재하는 파라미터를 apply함수를 통해 파라미터를 내가 원하는 값으로 설정이 가능함
-            trunc_normal_(m.weight, std = .02)
-            if isinstance(m,nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+            # trunc_normal_(m.weight, std = .02)
+            # if isinstance(m,nn.Linear) and m.bias is not None:
+            #     nn.init.constant_(m.bias, 0)
 
     def forward(self,x):
         x = self.mlp(x)

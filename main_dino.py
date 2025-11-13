@@ -6,6 +6,7 @@ import time
 import math
 import json
 from pathlib import Path
+from tqdm import tqdm,trange
 
 import numpy as np
 from PIL import Image
@@ -19,6 +20,7 @@ from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
+from vision_transformer import DINOHead
 import matplotlib.pyplot as plt
 def get_args_parser():
 
@@ -34,7 +36,21 @@ def get_args_parser():
     parser.add_argument("--global_crops_scale", default = (0.4, 1.), type = float)
     parser.add_argument("--local_crops_number", default = 7, type = int)
     parser.add_argument("--crops_scale", default = (0.05, 0.4), type = float)
-
+    parser.add_argument('--drop_path_rate', type=float, default=0.1)
+    parser.add_argument('--norm_last_layer', default=True, type=bool)
+    parser.add_argument('--use_bn_in_head', default=False, type=bool)
+    parser.add_argument('--device', default="cuda:0", type=str)
+    parser.add_argument('--warmup_teacher_temp', default=0.04, type=float,
+        help="""Initial value for the teacher temperature: 0.04 works well in most cases.
+        Try decreasing it if the training loss does not decrease.""")
+    parser.add_argument('--teacher_temp', default=0.04, type=float, help="""Final value (after linear warmup)
+        of the teacher temperature. For most experiments, anything above 0.07 is unstable. We recommend
+        starting with the default value of 0.04 and increase this slightly if needed.""")
+    parser.add_argument('--warmup_teacher_temp_epochs', default=0, type=int,
+        help='Number of warmup epochs for the teacher temperature (Default: 30).')
+    parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
+    parser.add_argument('--optimizer', default='adamw', type=str)
+    parser.add_argument('--momentum_teacher', default=0.996, type=float)
     return parser
 
 def train_dino(args):
@@ -61,9 +77,75 @@ def train_dino(args):
     # image, label = next(iter(data_loader))
     # img = image[0][5]
     # tensor_imshow(img)
+    
+    student = vits.__dict__[args.arch](patch_size = args.patch_size, drop_path_rate = args.drop_path_rate) # 파일.__dict__.keys()하면 그 파일에 존재하는 클래스,함수를 모두 보여줌, 그 중 내가 원하는 아키텍쳐를 선택해서 이런식으로 객체를 생성한다
+    teacher = vits.__dict__[args.arch](patch_size = args.patch_size) #drop_path_rate는 teacher는 디폴트인 0을 선택, student는 0.1로 하는 듯 하다
+    embed_dim = student.embed_dim
+
+
+    # MultiCropWrapper가 backbone과 head를 이어주는 역할을 함
+    # student와 teacher는 일반적인 backbone이었는데, 이제 head를 붙여서
+    # student는 MultiCropWrapper의 객체가 됐고 그 안에는 backbone : vit, head : Dinohead가 됨
+    # 그렇기 때문에 당연히 DINOHead의 in_dim은 vit의 출력 dim인 embed_dim이 되겠다 
+
+    student = utils.MultiCropWrapper(student, DINOHead(in_dim = embed_dim, out_dim = args.out_dim, use_bn = args.use_bn_in_head, norm_last_layer = args.norm_last_layer)) #, nlayer = , hidden_dim = ,bottleneck_dim = ))
+    teacher = utils.MultiCropWrapper(teacher, DINOHead(in_dim = embed_dim, out_dim = args.out_dim, use_bn = args.use_bn_in_head)) #teacher를 다르게 하려는건가,,, 둘 다 default가 True임..뭐지?
+
+    student, teacher = student.to(args.device), teacher.to(args.device)
+
+
+    print("student : ", sum(p.numel() for p in student.parameters() if p.requires_grad))
+    print("teacher : ", sum(p.numel() for p in teacher.parameters() if p.requires_grad))
+    
+    teacher.load_state_dict(student.state_dict()) #dataparallel을 사용할거면 module.state_dict()
+    # 참고 : https://tutorials.pytorch.kr/beginner/saving_loading_models.html
+    for p in teacher.parameters():
+        p.requires_grad = False
+    print(f"Student and Teacher are built: they are both {args.arch} network.")
+
+    dino_loss = DINOLoss(
+        out_dim = args.out_dim,
+        ncrops = args.local_crops_number + 2,
+        warmup_teacher_temp = args.warmup_teacher_temp,
+        teacher_temp = args.teacher_temp,
+        warmup_teacher_temp_epochs = args.warmup_teacher_temp_epochs,
+        nepochs = args.epochs
+    ).to(args.device)
+
+    param_groups = utils.get_params_groups(student)
+    optimizer = torch.optim.AdamW(param_groups) 
+
+    momentum_schedule = utils.cosine_scheduler(args.momentum_teacher, 1,
+                                               args.epochs, len(data_loader))
+
+    for epoch in trange(0, args.epochs,desc = "EPOCH"):
+        train_loss = train_one_epoch(student, teacher, dino_loss, data_loader, optimizer, epoch, args, momentum_schedule)
+        print(f"Epoch: {epoch+1}, Loss : {train_loss}")
+
+
 
     
     return 
+def train_one_epoch(student, teacher, dino_loss, data_loader, optimizer, epoch, args, momentum_schedule):
+    
+    running_loss = 0.0
+    for it,(images, labels) in enumerate(tqdm(data_loader,desc = "BATCH")):
+        it = len(data_loader) * epoch + it
+        images = [im.to(args.device) for im in images]
+        teacher_output = teacher(images[:2])
+        student_output = student(images)
+        loss = dino_loss(student_output, teacher_output, epoch)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+        with torch.no_grad():
+            m = momentum_schedule[it]
+            for param_q, param_k in zip(student.parameters(), teacher.parameters()):
+                param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+
+    return running_loss / len(data_loader)
+
 def tensor_imshow(img):
     
     image = img.permute(1, 2, 0).numpy()
@@ -174,12 +256,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents = True, exist_ok = True) #parents는 상위 경로가 없으면 생성해줌, exist_ok는 이미 존재해도 패스
     train_dino(args)
-    # dino_loss = DINOLoss(
-    #     65536,
-    #     8 + 2,  # total number of crops = 2 global crops + local_crops_number
-    #     0.04,
-    #     0.04,
-    #     0,
-    #     100,
-    # )
-
