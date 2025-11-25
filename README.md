@@ -28,3 +28,20 @@
 - 학습이 되는 과정까지 직접 확인
 - 코드 디버깅 연습 및 학습 코드까지 모두 완료
 - 다음 계획 : schedular 도입, 로그 출력 원본 코드 확인하기 
+
+# 2025/11/19
+- multigpu 새팅 완성
+- pt파일 load 후 벡터간 cosine similarity확인결과, collapse발생 확인
+- 다음 실험 전, DDP와 util 구체화하기 
+
+# 2025/11/24
+- mixed precision 추가
+- DDP 구체화 및 log 원본 코드와 똑같이 맞추기
+- parser 수정
+
+# 2025/11/25
+- EMA 업데이트 코드 수정
+- 원본 코드 util/클래스 추가
+- val -> train으로 수정
+- DDP실행방법 점검, 수정 python ~~~.py --> python -m torch.distributed.launch --nproc_per_node=4 main_dino.py
+
