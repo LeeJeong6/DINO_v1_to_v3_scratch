@@ -11,6 +11,8 @@ from torch.utils.data import DataLoader, Dataset
 import os
 from torchvision import transforms
 import torchvision
+
+
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     if drop_prob == 0. or not training:
         return x
@@ -73,7 +75,7 @@ class Attention(nn.Module):
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim ** -0.5
 
-        self.qkv = nn.Linear(dim, dim*3, bias = qkv_bias)
+        self.qkv = nn.Linear(dim, dim * 3, bias = qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -269,8 +271,4 @@ if __name__ == "__main__":
         image = image.to(device)
         label = label.to(device)
         vb(image)
-
-
-
-
 

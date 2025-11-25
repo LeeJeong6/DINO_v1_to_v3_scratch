@@ -39,7 +39,7 @@ def get_args_parser():
     parser.add_argument('--drop_path_rate', type=float, default=0.1)
     parser.add_argument('--norm_last_layer', default=True, type=bool)
     parser.add_argument('--use_bn_in_head', default=False, type=bool)
-    parser.add_argument('--device', default="cuda:0", type=str)
+
     parser.add_argument('--warmup_teacher_temp', default=0.04, type=float,
         help="""Initial value for the teacher temperature: 0.04 works well in most cases.
         Try decreasing it if the training loss does not decrease.""")
@@ -51,23 +51,52 @@ def get_args_parser():
     parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
     parser.add_argument('--optimizer', default='adamw', type=str)
     parser.add_argument('--momentum_teacher', default=0.996, type=float)
+    parser.add_argument('--seed', default=0, type=int, help='Random seed.')
+    parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
+        distributed training; see https://pytorch.org/docs/stable/distributed.html""")
+    parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
+    parser.add_argument('--use_fp16', type = bool, default=True, help="""Whether or not
+        to use half precision for training. Improves training time and memory requirements,
+        but can provoke instability and slight decay of performance. We recommend disabling
+        mixed precision if the loss is unstable, if reducing the patch size or if training with bigger ViTs.""")
+    parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
+        linear warmup (highest LR used during training). The learning rate is linearly scaled
+        with the batch size, and specified here for a reference batch size of 256.""")
+    parser.add_argument("--warmup_epochs", default=10, type=int,
+        help="Number of epochs for the linear learning-rate warm up.")
+    parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
+        end of optimization. We use a cosine LR schedule with linear warmup.""")
+    parser.add_argument('--weight_decay', type=float, default=0.04, help="""Initial value of the
+        weight decay. With ViT, a smaller value at the beginning of training works well.""")    
+    parser.add_argument('--weight_decay_end', type=float, default=0.4, help="""Final value of the
+        weight decay. We use a cosine schedule for WD and using a larger decay by
+        the end of training improves performance for ViTs.""")
+    parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
+        during which we keep the output layer fixed. Typically doing so during
+        the first epoch helps training. Try increasing this value if the loss does not decrease.""")        
+  
     return parser
 
+
 def train_dino(args):
-    # utils.init_distributed_mode(args)
+    utils.init_distributed_mode(args)
+    utils.fix_random_seeds(args.seed)
+    print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
+    cudnn.benchmark = True
+
     transform = DataAugmentationDINO(
         global_crops_scale = args.global_crops_scale, 
         local_crops_number = args.local_crops_number, 
         local_crops_scale = args.crops_scale)
 
-    dataset = datasets.ImageFolder(root = "/mnt/hdd_6tb/ImageNet/ILSVRC2012_img_val/", transform = transform)
+    dataset = datasets.ImageFolder(root = "/mnt/hdd_6tb/ImageNet/ILSVRC2012_img_train/", transform = transform)
     
-    # sampler = torch.utils.data.DistributedSampler(datasets, shuffle = True) # gpu분산학습을 위해서 이걸 도입함
+    sampler = torch.utils.data.DistributedSampler(dataset, shuffle = True) # gpu분산학습을 위해서 이걸 도입함
     data_loader = torch.utils.data.DataLoader(
         dataset = dataset,
         batch_size = args.batch_size_per_gpu,
         
-        # sampler = sampler,
+        sampler = sampler,
         num_workers = args.num_workers,
         pin_memory = True, # cpu->gpu로 이동이 빠르다. 참고 : https://velog.io/@smuhyeon/Pytorch-Dataloader-pinmemory%EC%84%A4%EC%A0%95
         drop_last = True
@@ -91,13 +120,16 @@ def train_dino(args):
     student = utils.MultiCropWrapper(student, DINOHead(in_dim = embed_dim, out_dim = args.out_dim, use_bn = args.use_bn_in_head, norm_last_layer = args.norm_last_layer)) #, nlayer = , hidden_dim = ,bottleneck_dim = ))
     teacher = utils.MultiCropWrapper(teacher, DINOHead(in_dim = embed_dim, out_dim = args.out_dim, use_bn = args.use_bn_in_head)) #teacher를 다르게 하려는건가,,, 둘 다 default가 True임..뭐지?
 
-    student, teacher = student.to(args.device), teacher.to(args.device)
+    # student, teacher = student.to(args.device), teacher.to(args.device)
+    student, teacher = student.cuda(), teacher.cuda()
 
 
     print("student : ", sum(p.numel() for p in student.parameters() if p.requires_grad))
     print("teacher : ", sum(p.numel() for p in teacher.parameters() if p.requires_grad))
     
-    teacher.load_state_dict(student.state_dict()) #dataparallel을 사용할거면 module.state_dict()
+    student = nn.parallel.DistributedDataParallel(student, device_ids = [args.gpu])
+    teacher_without_ddp = teacher
+    teacher_without_ddp.load_state_dict(student.module.state_dict()) #dataparallel을 사용할거면 module.state_dict()
     # 참고 : https://tutorials.pytorch.kr/beginner/saving_loading_models.html
     for p in teacher.parameters():
         p.requires_grad = False
@@ -110,41 +142,116 @@ def train_dino(args):
         teacher_temp = args.teacher_temp,
         warmup_teacher_temp_epochs = args.warmup_teacher_temp_epochs,
         nepochs = args.epochs
-    ).to(args.device)
+    ).cuda()
 
+    fp16_scaler = None #mixed precision으로 fp32 -> fp16으로 변경해서 메모리 효율 등의 장점이 있다.
+    if args.use_fp16:
+        fp16_scaler = torch.cuda.amp.GradScaler()
     param_groups = utils.get_params_groups(student)
     optimizer = torch.optim.AdamW(param_groups) 
 
+    lr_schedule = utils.cosine_scheduler(
+        args.lr * (args.batch_size_per_gpu * utils.get_world_size()) / 256.,  # linear scaling rule
+        args.min_lr,
+        args.epochs, len(data_loader),
+        warmup_epochs=args.warmup_epochs,
+    )
+
+    wd_schedule = utils.cosine_scheduler(
+        args.weight_decay,
+        args.weight_decay_end,
+        args.epochs, len(data_loader),
+    )
     momentum_schedule = utils.cosine_scheduler(args.momentum_teacher, 1,
                                                args.epochs, len(data_loader))
 
-    for epoch in trange(0, args.epochs,desc = "EPOCH"):
-        train_loss = train_one_epoch(student, teacher, dino_loss, data_loader, optimizer, epoch, args, momentum_schedule)
-        print(f"Epoch: {epoch+1}, Loss : {train_loss}")
+    to_restore = {"epoch": 0}
+    utils.restart_from_checkpoint(
+        os.path.join(args.output_dir, "checkpoint.pth"),
+        run_variables=to_restore,
+        student=student,
+        teacher=teacher,
+        optimizer=optimizer,
+        fp16_scaler=fp16_scaler,
+        dino_loss=dino_loss,
+    )
+    start_epoch = to_restore["epoch"]
+
+    start_time = time.time()
+    print("Starting DINO training !")
+    for epoch in trange(start_epoch, args.epochs):
+        data_loader.sampler.set_epoch(epoch)
+
+        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss,
+            data_loader, optimizer, lr_schedule, wd_schedule, momentum_schedule,
+            epoch, fp16_scaler, args)
+        save_dict = {
+            'student': student.state_dict(),
+            'teacher': teacher.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch + 1,
+            'args': args,
+            'dino_loss': dino_loss.state_dict(),
+        }
+        if fp16_scaler is not None:
+            save_dict['fp16_scaler'] = fp16_scaler.state_dict()    
+        utils.save_on_master(save_dict, os.path.join(args.output_dir, 'checkpoint.pth')) 
+        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                     'epoch': epoch}
+        if utils.is_main_process():
+            with (Path(args.output_dir) / "log.txt").open("a") as f:
+                f.write(json.dumps(log_stats) + "\n")       
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    print('Training time {}'.format(total_time_str))
 
 
+def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader,
+                    optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
+                    fp16_scaler, args):
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
 
-    
-    return 
-def train_one_epoch(student, teacher, dino_loss, data_loader, optimizer, epoch, args, momentum_schedule):
-    
-    running_loss = 0.0
-    for it,(images, labels) in enumerate(tqdm(data_loader,desc = "BATCH")):
+    # running_loss = 0.0
+    # for it,(images, labels) in enumerate(tqdm(data_loader,desc = "BATCH")):
+    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
         it = len(data_loader) * epoch + it
-        images = [im.to(args.device) for im in images]
-        teacher_output = teacher(images[:2])
-        student_output = student(images)
-        loss = dino_loss(student_output, teacher_output, epoch)
+        for i,param_group in enumerate(optimizer.param_groups):
+            param_group["lr"] = lr_schedule[it]
+            if i == 0 :
+                param_group["weight_decay"] =wd_schedule[it]
+
+        images = [im.cuda(non_blocking = True) for im in images]
+
+        with torch.cuda.amp.autocast(fp16_scaler is not None):
+            teacher_output = teacher(images[:2])
+            student_output = student(images)
+            loss = dino_loss(student_output, teacher_output, epoch)
+        if not math.isfinite(loss.item()):
+            print("Loss is {}, stopping traning".format(loss.item()), force = True)    
+            sys.exit(1)
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
+        
+        fp16_scaler.scale(loss).backward()
+        utils.cancel_gradients_last_layer(epoch, student, args.freeze_last_layer)
+        fp16_scaler.step(optimizer)
+        fp16_scaler.update()
+
         with torch.no_grad():
             m = momentum_schedule[it]
-            for param_q, param_k in zip(student.parameters(), teacher.parameters()):
+            for param_q, param_k in zip(student.module.parameters(), teacher_without_ddp.parameters()):
                 param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
 
-    return running_loss / len(data_loader)
+        torch.cuda.synchronize()        
+        metric_logger.update(loss=loss.item())
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])        
+        metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
+    metric_logger.synchronize_between_processes()    
+    print("Averaged stats:", metric_logger)
+    # torch.save(student.state_dict(), "./ImageNet/student.pt")
+    # torch.save(teacher.state_dict(), "./ImageNet/teacher.pt")
+    # return running_loss / len(data_loader)
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 def tensor_imshow(img):
     
@@ -195,8 +302,10 @@ class DINOLoss(nn.Module):
     @torch.no_grad()
     def update_center(self,teacher_output):
         batch_center= torch.sum(teacher_output, dim = 0, keepdim = True)
-        # dist.all_reduce(batch_center) # 분산학습에서 gpu간 데이터 통신에 개선할 수 있는 방법 / 참고 : https://algopoolja.tistory.com/95
-        batch_center = batch_center * self.center_momentum + batch_center * (1 - self.center_momentum)    
+        dist.all_reduce(batch_center) # 분산학습에서 gpu간 데이터 통신에 개선할 수 있는 방법 / 참고 : https://algopoolja.tistory.com/95
+        batch_center = batch_center / (len(teacher_output) * dist.get_world_size())
+        self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
+        # batch_center = batch_center * self.center_momentum + batch_center * (1 - self.center_momentum)    
                 
         
 class DataAugmentationDINO():
