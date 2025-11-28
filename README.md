@@ -45,3 +45,10 @@
 - val -> train으로 수정
 - DDP실행방법 점검, 수정 python ~~~.py --> python -m torch.distributed.launch --nproc_per_node=4 main_dino.py
 
+# 2025/11/28
+- eval_linear.py 만들기
+- 아직 학습중이라 GPU에 올려서 실험해보지 못했음
+- 학습이 다 되면 python -m torch.distributed.launch --nproc_per_node=4 eval_linear.py
+- eval_linear.py는 fc layer로 finetuning하는거라 특별한 기법은 없다. 그래서 코드만 이해 후 복붙함
+
+

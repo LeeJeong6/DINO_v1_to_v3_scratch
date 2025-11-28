@@ -123,7 +123,6 @@ def train_dino(args):
     # student, teacher = student.to(args.device), teacher.to(args.device)
     student, teacher = student.cuda(), teacher.cuda()
 
-
     print("student : ", sum(p.numel() for p in student.parameters() if p.requires_grad))
     print("teacher : ", sum(p.numel() for p in teacher.parameters() if p.requires_grad))
     
@@ -214,7 +213,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
     # running_loss = 0.0
     # for it,(images, labels) in enumerate(tqdm(data_loader,desc = "BATCH")):
-    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):    
         it = len(data_loader) * epoch + it
         for i,param_group in enumerate(optimizer.param_groups):
             param_group["lr"] = lr_schedule[it]
