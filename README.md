@@ -51,4 +51,8 @@
 - 학습이 다 되면 python -m torch.distributed.launch --nproc_per_node=4 eval_linear.py
 - eval_linear.py는 fc layer로 finetuning하는거라 특별한 기법은 없다. 그래서 코드만 이해 후 복붙함
 
+# 2025/12/6
+- 학습 완료된 모델로 classifier fine tuning시작
+- log를 보면 더 loss가 줄어들 수는 있을 것 같은데 이게 collapse를 잘 피한건지 의문임
+- eval_linear.py 오타 수정, vision_transformer.py 수정
 

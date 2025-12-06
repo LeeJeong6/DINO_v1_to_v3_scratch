@@ -53,7 +53,7 @@ def eval_linear(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "val"), transform=val_transform)
+    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "ILSVRC2012_img_val"), transform=val_transform)
 
     val_loader = torch.utils.data.DataLoader(
         dataset_val,
@@ -73,7 +73,7 @@ def eval_linear(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "train"), transform=train_transform)
+    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "ILSVRC2012_img_train"), transform=train_transform)
     sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
     train_loader = torch.utils.data.DataLoader(
         dataset_train,
@@ -220,7 +220,7 @@ class LinearClassifier(nn.Module):
         super().__init__()
         self.num_labels = num_labels
         self.linear = nn.Linear(dim, num_labels)
-        self.linear.weight.data.noram_(mean = 0.0, std = 0.01)
+        self.linear.weight.data.normal_(mean = 0.0, std = 0.01)
         self.linear.bias.data.zero_()
 
     def forward(self, x):
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size_per_gpu', default=128, type=int)
     parser.add_argument("--dist_url", default="env://", type=str)
     parser.add_argument("--local_rank", default=0, type=int)
-    parser.add_argument('--data_path', default='/path/to/imagenet/', type=str)
+    parser.add_argument('--data_path', default="/mnt/hdd_6tb/ImageNet/", type=str)
     parser.add_argument('--num_workers', default=10, type=int)
     parser.add_argument('--val_freq', default=1, type=int)
     parser.add_argument('--output_dir', default="./")
