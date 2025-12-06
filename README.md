@@ -55,4 +55,4 @@
 - 학습 완료된 모델로 classifier fine tuning시작
 - log를 보면 더 loss가 줄어들 수는 있을 것 같은데 이게 collapse를 잘 피한건지 의문임
 - eval_linear.py 오타 수정, vision_transformer.py 수정
-
+- https://drive.google.com/file/d/1DjCuKCwuE_XIqlSvD2K04LPAvMGqDnM4/view?usp=sharing에서 다운 가능
