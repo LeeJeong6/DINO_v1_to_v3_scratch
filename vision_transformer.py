@@ -12,6 +12,7 @@ import os
 from torchvision import transforms
 import torchvision
 
+from utils import trunc_normal_
 
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     if drop_prob == 0. or not training:
@@ -135,6 +136,10 @@ class VisionTransformer(nn.Module):
 
         self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0  else nn.Identity()
 
+        trunc_normal_(self.pos_embed, std=.02)
+        trunc_normal_(self.cls_token, std=.02)
+        self.apply(self._init_weights)
+
     def prepare_tokens(self,x):
         B, C, w, h = x.shape
         x = self.patch_embed(x) # B, num_patches, embed_dim
@@ -146,6 +151,18 @@ class VisionTransformer(nn.Module):
         # torch.Size([B, 197, 384])
         
         return self.pos_drop(x)
+    def _init_weights(self, m):
+        """
+        2025/12/17
+        학습개선을 위해 추가함.
+        """
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
 
     def interpolate_pos_encoding(self,x,w,h):
         """
@@ -252,15 +269,18 @@ class DINOHead(nn.Module):
             self.mlp = nn.Sequential(*layers)
         # self.mlp는 이제 위 layer들을 쌓은 탑이 됨
         # 처음 가중치는 랜덤일텐데 apply함수로 _init_weights에서 정의한 변수들로 초기화가 됨    
-        # self.apply(self.__init__weights)
+        self.apply(self._init_weights)
         self.last_layer = nn.utils.weight_norm(nn.Linear(bottleneck_dim, out_dim, bias = False))            
         self.last_layer.weight_g.data.fill_(1)
         if norm_last_layer :
             self.last_layer.weight_g.requires_grad = False
 
-    def __init__weights(self,m):
-        if isinstance(m,nn.Linear):
-            return None
+    def _init_weights(self, m):
+        """이 코드도 학습이 안돼서 추가해봄"""
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
             # 이 실험은 prac에 있음
             # nn.Linear에 존재하는 파라미터를 apply함수를 통해 파라미터를 내가 원하는 값으로 설정이 가능함
             # trunc_normal_(m.weight, std = .02)

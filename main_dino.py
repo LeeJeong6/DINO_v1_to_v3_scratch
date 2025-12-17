@@ -54,6 +54,7 @@ def get_args_parser():
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
+    parser.add_argument('--clip_grad', type=float, default=3.0)    
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
     parser.add_argument('--use_fp16', type = bool, default=True, help="""Whether or not
         to use half precision for training. Improves training time and memory requirements,
@@ -89,7 +90,7 @@ def train_dino(args):
         local_crops_number = args.local_crops_number, 
         local_crops_scale = args.crops_scale)
 
-    dataset = datasets.ImageFolder(root = "/mnt/hdd_6tb/ImageNet/ILSVRC2012_img_train/", transform = transform)
+    dataset = datasets.ImageFolder(root = "/mnt/hdd_6tb/ImageNet/train/", transform = transform)
     
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle = True) # gpu분산학습을 위해서 이걸 도입함
     data_loader = torch.utils.data.DataLoader(
@@ -229,9 +230,11 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping traning".format(loss.item()), force = True)    
             sys.exit(1)
-        optimizer.zero_grad()
-        
+        optimizer.zero_grad() # 학습이 안돼서 이거 두개를 원본 코드에서 추가해봄 1
+        param_norms = utils.clip_gradients(student, args.clip_grad) # 2 
         fp16_scaler.scale(loss).backward()
+        fp16_scaler.unscale_(optimizer)
+
         utils.cancel_gradients_last_layer(epoch, student, args.freeze_last_layer)
         fp16_scaler.step(optimizer)
         fp16_scaler.update()
