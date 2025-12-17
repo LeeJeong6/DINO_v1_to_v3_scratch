@@ -56,3 +56,7 @@
 - log를 보면 더 loss가 줄어들 수는 있을 것 같은데 이게 collapse를 잘 피한건지 의문임
 - eval_linear.py 오타 수정, vision_transformer.py 수정
 - https://drive.google.com/file/d/1DjCuKCwuE_XIqlSvD2K04LPAvMGqDnM4/view?usp=sharing에서 다운 가능
+
+# 2025/12/17
+- 애초에 학습이 다 안됐던 것 같아서 trunc_normal, init_weights 등 가중치 관련 함수들을 추가하고 main_dino부터 다시 학습 시작
+- main_dino의 clip_grad함수도 추가해서 새팅, ImageNet경로 수정
