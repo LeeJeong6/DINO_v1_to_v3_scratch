@@ -60,3 +60,8 @@
 # 2025/12/17
 - 애초에 학습이 다 안됐던 것 같아서 trunc_normal, init_weights 등 가중치 관련 함수들을 추가하고 main_dino부터 다시 학습 시작
 - main_dino의 clip_grad함수도 추가해서 새팅, ImageNet경로 수정
+
+# 2025/01/05
+- Training time 17 days, 3:11:03으로 main_dino학습 모두 완료
+- 드라이브에 main_dino_2026_01_05.pth이름으로 다시 업로드
+- 서버 이동으로 이제 8gpu에서 실험 예정
